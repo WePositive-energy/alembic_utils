@@ -54,6 +54,14 @@ scifi_books = PGMaterializedView(
     definition="select * from books where genre='scifi'",
     with_data=True
 )
+
+temperature_15_minute = PGMaterializedView(
+    schema="public",
+    signature="temperature_15_minute",
+    definition="SELECT device, time_bucket(INTERVAL '15 minutes', time) AS bucket, AVG(temperature) as avg_temperature FROM metrics GROUP BY device, bucket;",
+    with_data=True,
+    storage_parameters=["timescaledb.continuous"]
+)
 ```
 
 
