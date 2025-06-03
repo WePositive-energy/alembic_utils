@@ -1,4 +1,7 @@
+from typing import TypeAlias, Union
 from uuid import uuid4
+
+StorageParameter: TypeAlias = Union[str, tuple[str, Union[str, int, float]]]
 
 
 def normalize_whitespace(text, base_whitespace: str = " ") -> str:
@@ -41,6 +44,49 @@ def escape_colon_for_plpgsql(sql: str) -> str:
     sql = sql.replace(holder2, ":=")
     sql = sql.replace(holder1, "::")
     return sql
+
+
+def format_storage_parameters_clause(
+    storage_parameters: list[StorageParameter] | None,
+) -> str:
+    """Generates a WITH clause with storage parameters.
+
+    Examples:
+        format_storage_parameters_clause([("param1",70),"param2", ("param3","'test'")]) => " WITH (param1=70, param2, param3='test')"
+        format_storage_parameters_clause([]) => ""
+        format_storage_parameters_clause(None) => ""
+    """
+    if storage_parameters is None or len(storage_parameters) == 0:
+        return ""
+    params = [
+        param if isinstance(param, str) else f"{param[0]}={param[1]}"
+        for param in storage_parameters
+    ]
+    return f" WITH ({', '.join(params)})"
+
+
+def parse_storage_parameters(storage_parameters: str) -> list[StorageParameter]:
+    """Parse a string of storage parameters.
+
+    Examples:
+        parse_storage_parameters("param1,param2=80, param3='test'") => ["param1",("param2",80),("param3","'test'")]
+    """
+    params: list[StorageParameter] = []
+    for part in storage_parameters.split(","):
+        new_part: StorageParameter = part.strip()
+        if "=" in part:
+            split_part = part.split("=", 1)
+            # doing it this way so mypy doesn't complain
+            new_part = (split_part[0].strip(), split_part[1].strip())
+            try:
+                new_part = (part[0], int(part[1]))
+            except ValueError:
+                try:
+                    new_part = (part[0], float(part[1]))
+                except ValueError:
+                    pass
+        params.append(new_part)
+    return params
 
 
 def coerce_to_quoted(text: str) -> str:

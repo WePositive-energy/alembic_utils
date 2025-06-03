@@ -10,8 +10,11 @@ from sqlalchemy.sql.elements import TextClause
 from alembic_utils.exceptions import SQLParseFailure
 from alembic_utils.replaceable_entity import ReplaceableEntity
 from alembic_utils.statement import (
+    StorageParameter,
     coerce_to_unquoted,
+    format_storage_parameters_clause,
     normalize_whitespace,
+    parse_storage_parameters,
     strip_terminating_semicolon,
 )
 
@@ -28,15 +31,25 @@ class PGMaterializedView(ReplaceableEntity):
     * **signature** - *str*: A SQL view's call signature
     * **definition** - *str*: The SQL select statement body of the view
     * **with_data** - *bool*: Should create and replace statements populate data
+    * **storage_parameters** - *list[str|tuple[str,str]]*: Optional storage parameters for the materialized view
     """
 
     type_ = "materialized_view"
 
-    def __init__(self, schema: str, signature: str, definition: str, with_data: bool = True):
+    def __init__(
+        self,
+        schema: str,
+        signature: str,
+        definition: str,
+        with_data: bool = True,
+        storage_parameters: list[StorageParameter] | None = None,
+    ):
         self.schema: str = coerce_to_unquoted(normalize_whitespace(schema))
         self.signature: str = coerce_to_unquoted(normalize_whitespace(signature))
         self.definition: str = strip_terminating_semicolon(definition)
         self.with_data = with_data
+        self.storage_parameters: list[StorageParameter] | None = storage_parameters
+        self.storage_parameter_clause: str = format_storage_parameters_clause(storage_parameters)
 
     @classmethod
     def from_sql(cls, sql: str) -> "PGMaterializedView":
@@ -49,8 +62,11 @@ class PGMaterializedView(ReplaceableEntity):
 
         templates = [
             # Enumerate maybe semicolon endings
+            "create{}materialized{}view{:s}{schema}.{signature}{:s}with{:s}({storage_parameters}){:s}as{:s}{definition}{:s}with{:s}data",
             "create{}materialized{}view{:s}{schema}.{signature}{:s}as{:s}{definition}{:s}with{:s}data",
+            "create{}materialized{}view{:s}{schema}.{signature}{:s}with{:s}({storage_parameters}){:s}as{:s}{definition}{}with{:s}{no_data}{:s}data",
             "create{}materialized{}view{:s}{schema}.{signature}{:s}as{:s}{definition}{}with{:s}{no_data}{:s}data",
+            "create{}materialized{}view{:s}{schema}.{signature}{:s}with{:s}({storage_parameters}){:s}as{:s}{definition}",
             "create{}materialized{}view{:s}{schema}.{signature}{:s}as{:s}{definition}",
         ]
 
@@ -58,7 +74,12 @@ class PGMaterializedView(ReplaceableEntity):
             result = parse(template, sql, case_sensitive=False)
 
             if result is not None:
-                with_data = not "no_data" in result
+                with_data = "no_data" not in result
+                storage_parameters: list[StorageParameter] | None = None
+
+                if "storage_parameters" in result:
+                    # if a WITH clause for storage parameters is present, parse them
+                    storage_parameters = parse_storage_parameters(result["storage_parameters"])
 
                 # If the signature includes column e.g. my_view (col1, col2, col3) remove them
                 signature = result["signature"].split("(")[0]
@@ -69,6 +90,7 @@ class PGMaterializedView(ReplaceableEntity):
                     signature=signature.replace('"', ""),
                     definition=result["definition"],
                     with_data=with_data,
+                    storage_parameters=storage_parameters,
                 )
 
         raise SQLParseFailure(f'Failed to parse SQL into PGView """{sql}"""')
@@ -80,7 +102,7 @@ class PGMaterializedView(ReplaceableEntity):
         definition = self.definition.rstrip().rstrip(";")
 
         return sql_text(
-            f'CREATE MATERIALIZED VIEW {self.literal_schema}."{self.signature}" AS {definition} WITH {"NO" if not self.with_data else ""} DATA;'
+            f'CREATE MATERIALIZED VIEW {self.literal_schema}."{self.signature}"{self.storage_parameter_clause} AS {definition} WITH {"NO" if not self.with_data else ""} DATA;'
         )
 
     def to_sql_statement_drop(self, cascade=False) -> TextClause:
@@ -99,7 +121,7 @@ class PGMaterializedView(ReplaceableEntity):
             f"""DROP MATERIALIZED VIEW IF EXISTS {self.literal_schema}."{self.signature}"; """
         )
         yield sql_text(
-            f"""CREATE MATERIALIZED VIEW {self.literal_schema}."{self.signature}" AS {definition} WITH {"NO" if not self.with_data else ""} DATA"""
+            f"""CREATE MATERIALIZED VIEW {self.literal_schema}."{self.signature}"{self.storage_parameter_clause} AS {definition} WITH {"NO" if not self.with_data else ""} DATA"""
         )
 
     def render_self_for_migration(self, omit_definition=False) -> str:
@@ -112,7 +134,8 @@ class PGMaterializedView(ReplaceableEntity):
             schema="{self.schema}",
             signature="{self.signature}",
             definition={repr(escaped_definition)},
-            with_data={repr(self.with_data)}
+            with_data={repr(self.with_data)},
+            storage_parameters={repr(self.storage_parameters)}
         )\n\n"""
 
     @classmethod
